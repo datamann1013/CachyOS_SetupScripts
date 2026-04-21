@@ -68,17 +68,29 @@ if podman ps -a | grep -q samba-server; then
     podman rm samba-server 2>/dev/null || true
 fi
 
-# --- 8. Prompt for Samba Password ---
-echo ""
-read -s -p "Enter desired Samba password for user '$USER': " SAMBA_PASS
-echo ""
-read -s -p "Confirm password: " SAMBA_PASS_CONFIRM
-echo ""
+# --- 8. Prompt for Samba Password (with retry) ---
+MAX_ATTEMPTS=3
+ATTEMPT=1
+while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+    echo ""
+    read -s -p "Enter desired Samba password for user '$USER': " SAMBA_PASS
+    echo ""
+    read -s -p "Confirm password: " SAMBA_PASS_CONFIRM
+    echo ""
 
-if [ "$SAMBA_PASS" != "$SAMBA_PASS_CONFIRM" ]; then
-    echo "Error: Passwords do not match. Exiting."
-    exit 1
-fi
+    if [ "$SAMBA_PASS" != "$SAMBA_PASS_CONFIRM" ]; then
+        echo "Error: Passwords do not match."
+        if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
+            echo "Please try again ($((MAX_ATTEMPTS - ATTEMPT)) attempts remaining)."
+        else
+            echo "Maximum attempts reached. Exiting."
+            exit 1
+        fi
+        ATTEMPT=$((ATTEMPT + 1))
+    else
+        break
+    fi
+done
 
 # --- 9. Run the Samba Container ---
 echo ">>> Starting Samba container..."
