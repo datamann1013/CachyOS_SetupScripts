@@ -1,5 +1,5 @@
 #!/bin/bash
-# setup-apps.sh - Part 2 of the modular CachyOS "dock" setup (Revised with password prompt)
+# setup-apps.sh - Part 2 of the modular CachyOS "dock" setup (Revised with sudo fix)
 # Run this AFTER setup-minimal.sh
 
 set -euo pipefail
@@ -56,10 +56,18 @@ if [ "$SAMBA_PASS" != "$SAMBA_PASS_CONFIRM" ]; then
     exit 1
 fi
 
-# --- 8. Automated Samba setup inside the container ---
+# --- 8. Automated Samba setup inside the container (with sudo fix) ---
 echo ">>> Configuring Samba inside container..."
 distrobox enter fileserver -- bash -c "
     set -e
+
+    # Ensure user has passwordless sudo
+    echo 'Configuring passwordless sudo for container user...'
+    if ! sudo -n true 2>/dev/null; then
+        echo '$USER ALL=(ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/$USER
+        sudo chmod 440 /etc/sudoers.d/$USER
+    fi
+
     echo 'Updating package list and installing Samba...'
     sudo apt update -qq
     sudo apt install -y samba
