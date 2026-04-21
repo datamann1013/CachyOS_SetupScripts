@@ -1,5 +1,5 @@
 #!/bin/bash
-# setup-apps.sh - Part 2 of the modular CachyOS "dock" setup (Revised with sudo fix)
+# setup-apps.sh - Part 2 of the modular CachyOS "dock" setup (Fixed Volume Mounts)
 # Run this AFTER setup-minimal.sh
 
 set -euo pipefail
@@ -16,8 +16,10 @@ flatpak install -y flathub \
     com.github.tchx84.Flatseal \
     org.onlyoffice.desktopeditors
 
-# --- 2. Create distrobox config directory ---
-mkdir -p ~/.config/distrobox
+# --- 2. Create host directories for shares (must exist before container mounts) ---
+echo ">>> Creating host directories for file shares..."
+mkdir -p ~/MachineFiles ~/BrowserDownloads
+chmod 777 ~/MachineFiles ~/BrowserDownloads   # Allow Samba to write
 
 # --- 3. Remove existing fileserver container if it exists ---
 if distrobox list | grep -q fileserver; then
@@ -26,7 +28,8 @@ if distrobox list | grep -q fileserver; then
     distrobox rm fileserver --force
 fi
 
-# --- 4. Create distrobox config with volume mounts ---
+# --- 4. Create distrobox config directory and volume mount config ---
+mkdir -p ~/.config/distrobox
 cat > ~/.config/distrobox/fileserver.ini << 'EOF'
 [container]
 additional_volumes="
@@ -56,7 +59,7 @@ if [ "$SAMBA_PASS" != "$SAMBA_PASS_CONFIRM" ]; then
     exit 1
 fi
 
-# --- 8. Automated Samba setup inside the container (with sudo fix) ---
+# --- 8. Automated Samba setup inside the container ---
 echo ">>> Configuring Samba inside container..."
 distrobox enter fileserver -- bash -c "
     set -e
@@ -72,10 +75,8 @@ distrobox enter fileserver -- bash -c "
     sudo apt update -qq
     sudo apt install -y samba
 
-    # Create shared directories
-    sudo mkdir -p /mnt/MachineFiles /mnt/BrowserDownloads
-    sudo chmod 777 /mnt/MachineFiles /mnt/BrowserDownloads
-
+    # The host directories are already mounted at /mnt/MachineFiles and /mnt/BrowserDownloads
+    # No need to create them; just ensure they are accessible (permissions already set on host)
     # Write Samba configuration
     echo 'Writing Samba configuration...'
     sudo tee /etc/samba/smb.conf > /dev/null << 'SMBEOF'
