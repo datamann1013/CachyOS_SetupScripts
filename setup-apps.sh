@@ -1,5 +1,5 @@
 #!/bin/bash
-# setup-apps.sh - Part 2 of the modular CachyOS "dock" setup (Dual Browsers + Samba + VPN)
+# setup-apps.sh - Part 2 of the modular CachyOS "dock" setup
 # Run this AFTER setup-minimal.sh
 
 set -euo pipefail
@@ -8,7 +8,6 @@ echo "========================================="
 echo " Starting Apps Profile Setup"
 echo "========================================="
 
-# --- Helper: Get primary IP address ---
 get_ip() {
     ip -4 addr show scope global | grep inet | head -1 | awk '{print $2}' | cut -d/ -f1
 }
@@ -45,7 +44,6 @@ mkdir -p ~/BrowserData/Secure
 echo ">>> Installing Waterfox (Flatpak) for Fun browser..."
 flatpak install -y flathub net.waterfox.waterfox
 
-# Fun browser launcher (uses isolated profile, saves to SMB share)
 mkdir -p ~/.local/share/applications
 cat > ~/.local/share/applications/waterfox-fun.desktop << EOF
 [Desktop Entry]
@@ -63,7 +61,7 @@ echo ">>> Creating host directories for file shares..."
 mkdir -p ~/MachineFiles ~/BrowserDownloads
 chmod 755 ~/MachineFiles ~/BrowserDownloads
 
-# --- 7. Remove Any Existing Samba Container ---
+# --- 7. Remove Existing Samba Container ---
 if podman ps -a | grep -q samba-server; then
     echo ">>> Removing existing Samba container..."
     podman stop samba-server 2>/dev/null || true
@@ -82,7 +80,7 @@ if [ "$SAMBA_PASS" != "$SAMBA_PASS_CONFIRM" ]; then
     exit 1
 fi
 
-# --- 9. Run the Samba Container (High Ports for Rootless) ---
+# --- 9. Run the Samba Container ---
 echo ">>> Starting Samba container..."
 podman run -d \
   --name samba-server \
@@ -95,12 +93,12 @@ podman run -d \
   --restart always \
   docker.io/servercontainers/samba:latest
 
-# --- 10. Firewall Rules for Samba (High Ports) ---
+# --- 10. Firewall for Samba ---
 echo ">>> Configuring firewall for Samba..."
 sudo firewall-cmd --add-port=1139/tcp --add-port=1445/tcp --permanent 2>/dev/null || true
 sudo firewall-cmd --reload 2>/dev/null || true
 
-# --- 11. Generate systemd User Service for Auto-Start ---
+# --- 11. Auto-start Samba container ---
 echo ">>> Setting up auto-start for Samba container..."
 mkdir -p ~/.config/systemd/user
 podman generate systemd --new --name samba-server > ~/.config/systemd/user/container-samba-server.service
@@ -154,14 +152,10 @@ if [ -n "$WG_CONFIG_PATH" ] && [ -f "$WG_CONFIG_PATH" ]; then
     mkdir -p ~/vpn/wireguard
     cp "$WG_CONFIG_PATH" ~/vpn/wireguard/wg0.conf
 
-    # Remove existing VPN pod if any
     podman pod stop vpn-pod 2>/dev/null || true
     podman pod rm vpn-pod 2>/dev/null || true
-
-    # Create pod
     podman pod create --name vpn-pod -p 8080:8080
 
-    # Start Gluetun inside the pod
     podman run -d \
       --pod vpn-pod \
       --name gluetun-vpn \
@@ -172,7 +166,6 @@ if [ -n "$WG_CONFIG_PATH" ] && [ -f "$WG_CONFIG_PATH" ]; then
       -e WIREGUARD_CONFIG_FILE=/gluetun/wireguard/wg0.conf \
       docker.io/qmcgaw/gluetun
 
-    # Auto-start systemd service
     mkdir -p ~/.config/systemd/user
     podman generate systemd --new --name vpn-pod > ~/.config/systemd/user/container-vpn-pod.service
     systemctl --user daemon-reload
@@ -180,25 +173,47 @@ if [ -n "$WG_CONFIG_PATH" ] && [ -f "$WG_CONFIG_PATH" ]; then
 
     echo ">>> VPN gateway configured."
 
-    # --- 16. Secure Browser inside Distrobox (Routed through VPN) ---
+    # --- 16. Secure Browser container (attached to VPN pod) ---
     echo ">>> Creating secure browser container (VPN routed)..."
-    distrobox create --name vpn-browser --image ubuntu:24.04 --yes \
-      --additional-flags "--network pod:vpn-pod"
+    podman stop vpn-browser 2>/dev/null || true
+    podman rm vpn-browser 2>/dev/null || true
 
-    # Install Waterfox inside the container
-    distrobox enter vpn-browser -- bash -c "
-        sudo apt update && sudo apt install -y flatpak
-        flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-        flatpak install -y flathub net.waterfox.waterfox
+    # Create container attached to VPN pod
+    podman create \
+      --name vpn-browser \
+      --pod vpn-pod \
+      --security-opt label=disable \
+      -e DISPLAY="${DISPLAY}" \
+      -v /tmp/.X11-unix:/tmp/.X11-unix:ro \
+      -v "${HOME}/BrowserData/Secure:${HOME}/BrowserData/Secure:Z" \
+      docker.io/library/ubuntu:24.04 \
+      tail -f /dev/null
+
+    podman start vpn-browser
+
+    echo ">>> Installing Waterfox inside the VPN container (this may take a few minutes)..."
+    podman exec vpn-browser bash -c "
+      apt update -qq && apt install -y flatpak
+      flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+      flatpak install -y flathub net.waterfox.waterfox
     "
 
-    # Export the launcher to the host (appears in app menu)
-    distrobox enter vpn-browser -- distrobox-export --app net.waterfox.waterfox
+    # Create launcher on host
+    cat > ~/.local/share/applications/waterfox-secure.desktop << EOF
+[Desktop Entry]
+Name=Waterfox (Secure VPN)
+Comment=Secure Browser - All traffic routed through WireGuard VPN
+Exec=/usr/bin/podman exec -e DISPLAY=${DISPLAY} vpn-browser flatpak run net.waterfox.waterfox
+Icon=net.waterfox.waterfox
+Terminal=false
+Type=Application
+Categories=Network;WebBrowser;
+EOF
 
-    echo ">>> Secure browser installed. Look for 'Waterfox (on vpn-browser)' in your menu."
+    update-desktop-database ~/.local/share/applications/ 2>/dev/null || true
+    echo ">>> Secure browser installed. Look for 'Waterfox (Secure VPN)' in your menu."
 else
     echo ">>> No VPN config provided. Secure browser will not be installed."
-    echo ">>> You can manually set up VPN later."
 fi
 
 # --- Final Summary ---
@@ -208,20 +223,17 @@ echo "========================================="
 echo " Apps Profile Setup Complete!"
 echo "========================================="
 echo ""
-echo "Samba shares are accessible at:"
-echo "  \\\\${IP_ADDR}\\MachineFiles   (port 445)"
-echo "  \\\\${IP_ADDR}\\BrowserDownloads (port 445)"
-if [ "$VPN_ENABLED" = true ]; then
-    echo "  (If using high ports, connect via port 1445)"
-fi
+echo "Samba shares:"
+echo "  \\\\${IP_ADDR}\\MachineFiles"
+echo "  \\\\${IP_ADDR}\\BrowserDownloads"
 echo ""
 echo "Samba user: $USER"
-echo "To test locally: smbclient -L localhost -p 1139 -N"
+echo "Test locally: smbclient -L localhost -p 1139 -N"
 echo ""
 echo "Browsers installed:"
-echo "  - Waterfox (Fun)    : Saves to SMB share, no VPN"
+echo "  - Waterfox (Fun)        : No VPN, downloads to SMB share"
 if [ "$VPN_ENABLED" = true ]; then
-    echo "  - Waterfox (on vpn-browser) : All traffic routed through WireGuard VPN"
+    echo "  - Waterfox (Secure VPN) : Routed through WireGuard"
 fi
 echo ""
 echo "Sandbox launcher: sandbox-open <file>"
