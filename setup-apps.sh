@@ -94,7 +94,7 @@ done
 
 # --- 9. Run the Samba Container ---
 echo ">>> Starting Samba container..."
-podman run -d \
+podman run -d --replace \
   --name samba-server \
   -p 1139:139 -p 1445:445 \
   -v ~/MachineFiles:/share/MachineFiles:z \
