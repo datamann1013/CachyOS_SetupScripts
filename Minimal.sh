@@ -23,7 +23,8 @@ sudo pacman -S --needed --noconfirm \
     netavark \
     crun \
     wget \
-    curl
+    curl \
+    wireguard-tools
 
 # --- 2. Enable and Start Firewall ---
 echo ">>> Enabling and starting firewalld..."
@@ -35,22 +36,12 @@ sudo firewall-cmd --state
 echo ">>> Configuring Flatpak and Flathub..."
 flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 
-# --- 4. Create Isolated File Directories ---
-echo ">>> Creating file container directories..."
-mkdir -p "$HOME/BrowserDownloads" "$HOME/MachineFiles"
-echo "Directories created:"
-ls -ld "$HOME/BrowserDownloads" "$HOME/MachineFiles"
-
-# --- 5. Install Waterfox (Browser) via Flatpak ---
-echo ">>> Installing Waterfox from Flathub..."
-flatpak install -y flathub net.waterfox.waterfox
-
-# --- 6. Basic Distrobox & Podman Verification ---
+# --- 4. Basic Distrobox & Podman Verification ---
 echo ">>> Verifying Distrobox and Podman installations..."
 distrobox --version
 podman --version
 
-# --- 7. Verify LTS Kernel is Present ---
+# --- 5. Verify LTS Kernel is Present ---
 echo ">>> Checking for LTS kernel..."
 if pacman -Q linux-cachyos-lts &>/dev/null; then
     echo "LTS kernel (linux-cachyos-lts) is installed."
