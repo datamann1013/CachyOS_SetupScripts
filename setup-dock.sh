@@ -4,13 +4,13 @@
 
 set -euo pipefail
 
-DRY_RUN=false
+DRY_RUN=""
 for arg in "$@"; do
-    [ "$arg" = "--dry-run" ] && DRY_RUN=true
+    [ "$arg" = "--dry-run" ] && DRY_RUN=1
 done
 
 run() {
-    if $DRY_RUN; then
+    if [ -n "$DRY_RUN" ]; then
         echo "[DRY-RUN] $*"
     else
         "$@"
@@ -56,7 +56,7 @@ run sudo firewall-cmd --reload
 echo ">>> Writing InputLeap server configuration..."
 
 INPUTLEAP_CONF=/etc/inputleap.conf
-if $DRY_RUN; then
+if [ -n "$DRY_RUN" ]; then
     echo "[DRY-RUN] Would write ${INPUTLEAP_CONF}"
 else
     HOSTNAME_VAL=$(hostname)
@@ -101,7 +101,7 @@ RestartSec=3
 [Install]
 WantedBy=graphical-session.target
 EOF
-    if ! $DRY_RUN; then
+    if [ -z "$DRY_RUN" ]; then
         systemctl --user daemon-reload
         systemctl --user enable inputleap-server.service
         systemctl --user start inputleap-server.service

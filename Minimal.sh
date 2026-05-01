@@ -4,13 +4,13 @@
 
 set -euo pipefail
 
-DRY_RUN=false
+DRY_RUN=""
 for arg in "$@"; do
-    [ "$arg" = "--dry-run" ] && DRY_RUN=true
+    [ "$arg" = "--dry-run" ] && DRY_RUN=1
 done
 
 run() {
-    if $DRY_RUN; then
+    if [ -n "$DRY_RUN" ]; then
         echo "[DRY-RUN] $*"
     else
         "$@"
@@ -40,7 +40,7 @@ run sudo pacman -S --needed --noconfirm \
 # --- 2. Enable and Start Firewall ---
 echo ">>> Enabling firewalld..."
 run sudo systemctl enable --now firewalld
-if ! $DRY_RUN; then
+if [ -z "$DRY_RUN" ]; then
     echo "Firewall status: $(sudo firewall-cmd --state)"
 fi
 
@@ -50,14 +50,14 @@ run flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flath
 
 # --- 4. Verify installations ---
 echo ">>> Verifying installs..."
-if ! $DRY_RUN; then
+if [ -z "$DRY_RUN" ]; then
     distrobox --version
     podman --version
 fi
 
 # --- 5. Verify LTS Kernel ---
 echo ">>> Checking for LTS kernel..."
-if ! $DRY_RUN; then
+if [ -z "$DRY_RUN" ]; then
     if pacman -Q linux-cachyos-lts &>/dev/null; then
         echo "LTS kernel (linux-cachyos-lts) is installed."
     else
