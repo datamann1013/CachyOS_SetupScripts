@@ -28,7 +28,7 @@ EOF
 
 # --- 2. Install Flatpak Applications ---
 echo ">>> Installing Flatpak applications..."
-flatpak install -y flathub \
+flatpak install --user -y flathub \
     com.discordapp.Discord \
     com.spotify.Client \
     com.github.tchx84.Flatseal \

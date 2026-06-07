@@ -115,10 +115,10 @@ check_container_image() {
 
 check_flatpak() {
     local label="$1" app_id="$2"
-    if flatpak info "$app_id" &>/dev/null; then
+    if flatpak info --user "$app_id" &>/dev/null; then
         pass "$label"
     else
-        fail "$label" "flatpak install flathub $app_id"
+        fail "$label" "flatpak install --user flathub $app_id"
     fi
 }
 
