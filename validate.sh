@@ -162,10 +162,10 @@ echo "[MINIMAL PROFILE]"
 check_service_active "firewalld running"  firewalld  "--system" "sudo systemctl start firewalld"
 check_service_enabled "firewalld enabled" firewalld  "--system" "sudo systemctl enable firewalld"
 
-if flatpak remotes 2>/dev/null | grep -q flathub; then
+if flatpak remotes --user 2>/dev/null | grep -q flathub; then
     pass "Flathub remote configured"
 else
-    fail "Flathub remote configured" "flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo"
+    fail "Flathub remote configured" "flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo"
 fi
 
 check_cmd "distrobox installed" distrobox "sudo pacman -S distrobox"

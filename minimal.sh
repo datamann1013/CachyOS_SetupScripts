@@ -46,7 +46,7 @@ fi
 
 # --- 3. Flatpak Setup ---
 echo ">>> Configuring Flathub..."
-run flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+run flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 
 # --- 4. Verify installations ---
 echo ">>> Verifying installs..."
