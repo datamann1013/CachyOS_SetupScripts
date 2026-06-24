@@ -125,7 +125,7 @@ podman run -d \
     -e SHARE="MachineFiles;/share/MachineFiles;yes;no;no;${USER}" \
     -e SHARE2="BrowserDownloads;/share/BrowserDownloads;yes;no;no;${USER}" \
     --restart on-failure:5 \
-    docker.io/servercontainers/samba:4
+    docker.io/servercontainers/samba:latest
 
 rm -f "$SAMBA_ENV"
 

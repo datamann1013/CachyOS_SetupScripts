@@ -177,7 +177,7 @@ if [[ "$PROFILE" =~ ^(apps|full)$ ]]; then
 echo ""
 echo "[APPS PROFILE — SAMBA]"
 
-check_container_image "Samba image present (servercontainers/samba:4)" "docker.io/servercontainers/samba:4"
+check_container_image "Samba image present (servercontainers/samba)" "docker.io/servercontainers/samba:latest"
 check_container_running "Container samba-server running" samba-server "systemctl --user start container-samba-server.service"
 check_dir  "~/MachineFiles exists"      "${HOME}/MachineFiles"
 check_dir  "~/BrowserDownloads exists"  "${HOME}/BrowserDownloads"
@@ -355,7 +355,7 @@ check_port_open "Port 24800/tcp open (InputLeap)" "24800/tcp"
 echo ""
 echo "[DOCK PROFILE — MOONLIGHT]"
 
-check_cmd  "moonlight-qt installed" moonlight-qt "sudo pacman -S moonlight-qt"
+check_cmd  "moonlight-qt installed" moonlight "sudo pacman -S moonlight-qt"
 check_port_open "Port 47984/tcp open (Moonlight)" "47984/tcp"
 check_port_open "Port 47989/tcp open (Moonlight)" "47989/tcp"
 check_port_open "Port 47990/tcp open (Moonlight)" "47990/tcp"
@@ -363,6 +363,49 @@ check_port_open "Port 48010/tcp open (Moonlight)" "48010/tcp"
 check_port_open "Ports 47998-48000/udp open (Moonlight)" "47998-48000/udp"
 
 fi  # end dock|full
+
+# ============================================================
+if [[ "$PROFILE" =~ ^(winapps|full)$ ]]; then
+echo ""
+echo "[WINAPPS PROFILE]"
+
+check_cmd  "FreeRDP installed" xfreerdp3 "sudo pacman -S freerdp"
+check_cmd  "winapps command available" winapps "Re-run setup-winapps.sh"
+check_file "WinApps config exists" \
+    "${HOME}/.config/winapps/winapps.conf" \
+    "Re-run setup-winapps.sh"
+check_dir  "WinApps directory exists" \
+    "${HOME}/.local/share/winapps" \
+    "git clone https://github.com/winapps-org/winapps.git ~/.local/share/winapps"
+
+if [ -f "${HOME}/.config/winapps/winapps.conf" ]; then
+    CONF_PERMS=$(stat -c '%a' "${HOME}/.config/winapps/winapps.conf" 2>/dev/null || echo "000")
+    if [ "$CONF_PERMS" = "600" ]; then
+        pass "winapps.conf permissions are 600"
+    else
+        fail "winapps.conf permissions are 600 (got ${CONF_PERMS})" "chmod 600 ${HOME}/.config/winapps/winapps.conf"
+    fi
+
+    if grep -q '^RDP_USER=' "${HOME}/.config/winapps/winapps.conf" 2>/dev/null; then
+        RDP_USER_VAL=$(grep '^RDP_USER=' "${HOME}/.config/winapps/winapps.conf" | cut -d'"' -f2)
+        if [ -n "$RDP_USER_VAL" ]; then
+            pass "RDP_USER is configured"
+        else
+            fail "RDP_USER is empty" "Edit ${HOME}/.config/winapps/winapps.conf"
+        fi
+    else
+        fail "RDP_USER is set in winapps.conf"
+    fi
+
+    if grep -q '^WAFLAVOR=' "${HOME}/.config/winapps/winapps.conf" 2>/dev/null; then
+        WAFLAVOR_VAL=$(grep '^WAFLAVOR=' "${HOME}/.config/winapps/winapps.conf" | cut -d'"' -f2)
+        pass "WAFLAVOR is set to '${WAFLAVOR_VAL}'"
+    else
+        warn "WAFLAVOR not explicitly set (defaults to docker)"
+    fi
+fi
+
+fi  # end winapps|full
 
 # ============================================================
 TOTAL=$((PASS + FAIL + WARN))

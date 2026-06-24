@@ -15,12 +15,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libx11-xcb1 \
     libxt6 \
     libglib2.0-0 \
-    libasound2 \
+    libasound2t64 \
     libpulse0 \
     fonts-liberation \
+    bzip2 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN useradd -m -u 1000 -s /bin/bash waterfox
+RUN if id -u 1000 >/dev/null 2>&1; then userdel -r "$(getent passwd 1000 | cut -d: -f1)"; fi \
+    && useradd -m -u 1000 -s /bin/bash waterfox
 
 WORKDIR /opt
 
