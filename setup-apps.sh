@@ -56,40 +56,51 @@ cat > ~/.local/bin/waterfox-fun << 'SCRIPT'
 #!/bin/bash
 CONTAINER_NAME="waterfox-fun"
 IMAGE="localhost/waterfox-base"
+VOLUME="waterfox-fun-data"
 
-if ! podman container exists "$CONTAINER_NAME" 2>/dev/null; then
-    XAUTH=$(find /run/user/$(id -u) -name 'xauth_*' -print -quit 2>/dev/null)
-    PULSE_SOCK="/run/user/$(id -u)/pulse/native"
+XAUTH=$(find /run/user/$(id -u) -name 'xauth_*' -print -quit 2>/dev/null)
+PULSE_SOCK="/run/user/$(id -u)/pulse/native"
 
-    RUN_OPTS=(
-        --name "$CONTAINER_NAME"
-        --security-opt no-new-privileges
-        --net=host
-        --device /dev/dri
-        -e DISPLAY="${DISPLAY:-:0}"
-        -e PULSE_SERVER=unix:/tmp/pulse/native
-    )
+RUN_OPTS=(
+    --name "$CONTAINER_NAME"
+    --security-opt no-new-privileges
+    --net=host
+    --device /dev/dri
+    -e DISPLAY="${DISPLAY:-:0}"
+    -e PULSE_SERVER=unix:/tmp/pulse/native
+    -e MOZ_DISABLE_CONTENT_SANDBOX=1
+    -v "$VOLUME:/home/waterfox":Z
+    -v "${HOME}/BrowserDownloads:/home/waterfox/Downloads:z"
+)
 
-    if [ -n "$XAUTH" ]; then
-        RUN_OPTS+=(
-            -v "$XAUTH:/tmp/.Xauthority:ro"
-            -e XAUTHORITY=/tmp/.Xauthority
-        )
-    fi
-
-    if [ -S "$PULSE_SOCK" ]; then
-        RUN_OPTS+=(-v "$PULSE_SOCK:/tmp/pulse/native:z")
-    fi
-
+if [ -n "$XAUTH" ]; then
     RUN_OPTS+=(
-        -v "${HOME}/BrowserDownloads:/home/waterfox/Downloads:Z"
-        "$IMAGE"
+        -v "$XAUTH:/tmp/.Xauthority:ro"
+        -e XAUTHORITY=/tmp/.Xauthority
     )
-
-    podman create "${RUN_OPTS[@]}" >/dev/null || exit 1
 fi
 
-podman start "$CONTAINER_NAME" && podman attach "$CONTAINER_NAME"
+if [ -S "$PULSE_SOCK" ]; then
+    RUN_OPTS+=(-v "$PULSE_SOCK:/tmp/pulse/native:z")
+fi
+
+for dev in /dev/hidraw*; do
+    [ -e "$dev" ] && RUN_OPTS+=(--device "$dev")
+done
+
+for dev in /dev/bus/usb/*/*; do
+    [ -e "$dev" ] && RUN_OPTS+=(--device "$dev")
+done
+
+if [ -S /run/pcscd/pcscd.comm ]; then
+    RUN_OPTS+=(
+        -v /run/pcscd/pcscd.comm:/run/pcscd/pcscd.comm:z
+        -e PCSCLITE_CSOCK_NAME=/run/pcscd/pcscd.comm
+    )
+fi
+
+podman rm -f "$CONTAINER_NAME" 2>/dev/null
+podman run --rm "${RUN_OPTS[@]}" "$IMAGE"
 SCRIPT
 chmod +x ~/.local/bin/waterfox-fun
 
@@ -104,6 +115,24 @@ Type=Application
 Categories=Network;WebBrowser;
 StartupNotify=true
 EOF
+
+# --- 5b. Udev rules for FIDO2/U2F security keys ---
+echo ">>> Installing udev rules for FIDO2 security keys..."
+sudo tee /etc/udev/rules.d/70-u2f-titan.rules > /dev/null << 'UDEV'
+# Google Titan Security Key v2 - USB device node
+SUBSYSTEM=="usb", ATTRS{idVendor}=="18d1", ATTRS{idProduct}=="9470", MODE="0666", TAG+="uaccess"
+# Google Titan Security Key v2 - hidraw
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="18d1", ATTRS{idProduct}=="9470", MODE="0666", TAG+="uaccess"
+# Generic FIDO2/U2F - make all security token hidraw devices accessible
+SUBSYSTEM=="hidraw", ENV{ID_SECURITY_TOKEN}=="1", MODE="0666", TAG+="uaccess"
+UDEV
+sudo udevadm control --reload-rules 2>/dev/null
+sudo udevadm trigger 2>/dev/null
+
+# --- 5c. PC/SC smart card daemon for CTAP2/WebAuthn ---
+echo ">>> Enabling pcscd for smart card / FIDO2 access..."
+sudo pacman -S --needed --noconfirm ccid pcsclite 2>/dev/null
+sudo systemctl enable --now pcscd.socket
 
 # --- 6. Samba File Server ---
 echo ">>> Setting up Samba file server..."

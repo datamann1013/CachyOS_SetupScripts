@@ -23,6 +23,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     libegl1 \
     libgbm1 \
+    libfido2-1 \
+    libusb-1.0-0 \
+    libpcsclite1 \
+    libnss3 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN if id -u 1000 >/dev/null 2>&1; then userdel -r "$(getent passwd 1000 | cut -d: -f1)"; fi \
