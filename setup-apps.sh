@@ -54,19 +54,42 @@ mkdir -p ~/.local/bin ~/.local/share/applications
 
 cat > ~/.local/bin/waterfox-fun << 'SCRIPT'
 #!/bin/bash
-# Runs Waterfox in a fresh, isolated container. Exits when browser closes.
-# Only ~/BrowserDownloads is accessible — no host home directory.
-WAYLAND_SOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/${WAYLAND_DISPLAY:-wayland-0}"
-exec podman run --rm \
-    --name "waterfox-fun-$$" \
-    --security-opt no-new-privileges \
-    -e WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}" \
-    -e XDG_RUNTIME_DIR=/tmp/runtime \
-    -v "${WAYLAND_SOCK}:/tmp/runtime/${WAYLAND_DISPLAY:-wayland-0}:ro" \
-    -v /tmp/.X11-unix:/tmp/.X11-unix:ro \
-    -e DISPLAY="${DISPLAY:-:0}" \
-    -v "${HOME}/BrowserDownloads:/home/waterfox/Downloads:Z" \
-    localhost/waterfox-base
+CONTAINER_NAME="waterfox-fun"
+IMAGE="localhost/waterfox-base"
+
+if ! podman container exists "$CONTAINER_NAME" 2>/dev/null; then
+    XAUTH=$(find /run/user/$(id -u) -name 'xauth_*' -print -quit 2>/dev/null)
+    PULSE_SOCK="/run/user/$(id -u)/pulse/native"
+
+    RUN_OPTS=(
+        --name "$CONTAINER_NAME"
+        --security-opt no-new-privileges
+        --net=host
+        --device /dev/dri
+        -e DISPLAY="${DISPLAY:-:0}"
+        -e PULSE_SERVER=unix:/tmp/pulse/native
+    )
+
+    if [ -n "$XAUTH" ]; then
+        RUN_OPTS+=(
+            -v "$XAUTH:/tmp/.Xauthority:ro"
+            -e XAUTHORITY=/tmp/.Xauthority
+        )
+    fi
+
+    if [ -S "$PULSE_SOCK" ]; then
+        RUN_OPTS+=(-v "$PULSE_SOCK:/tmp/pulse/native:z")
+    fi
+
+    RUN_OPTS+=(
+        -v "${HOME}/BrowserDownloads:/home/waterfox/Downloads:Z"
+        "$IMAGE"
+    )
+
+    podman create "${RUN_OPTS[@]}" >/dev/null || exit 1
+fi
+
+podman start "$CONTAINER_NAME" && podman attach "$CONTAINER_NAME"
 SCRIPT
 chmod +x ~/.local/bin/waterfox-fun
 
@@ -90,25 +113,34 @@ podman stop samba-server 2>/dev/null || true
 podman rm samba-server 2>/dev/null || true
 
 # Prompt for Samba password — max 3 attempts
+# If stdin is not a terminal (e.g. piped over SSH), generate a random password
 MAX_ATTEMPTS=3
 ATTEMPT=1
-while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+if [ -t 0 ]; then
+    while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+        echo ""
+        read -s -p "Enter Samba password for user '${USER}': " SAMBA_PASS
+        echo ""
+        read -s -p "Confirm password: " SAMBA_PASS_CONFIRM
+        echo ""
+        if [ "$SAMBA_PASS" = "$SAMBA_PASS_CONFIRM" ]; then
+            break
+        fi
+        echo "Passwords do not match."
+        ATTEMPT=$((ATTEMPT + 1))
+        if [ $ATTEMPT -gt $MAX_ATTEMPTS ]; then
+            echo "Maximum attempts reached. Exiting." >&2
+            exit 1
+        fi
+        echo "Try again ($((MAX_ATTEMPTS - ATTEMPT + 1)) attempts remaining)."
+    done
+else
+    SAMBA_PASS=$(openssl rand -base64 18)
     echo ""
-    read -s -p "Enter Samba password for user '${USER}': " SAMBA_PASS
-    echo ""
-    read -s -p "Confirm password: " SAMBA_PASS_CONFIRM
-    echo ""
-    if [ "$SAMBA_PASS" = "$SAMBA_PASS_CONFIRM" ]; then
-        break
-    fi
-    echo "Passwords do not match."
-    ATTEMPT=$((ATTEMPT + 1))
-    if [ $ATTEMPT -gt $MAX_ATTEMPTS ]; then
-        echo "Maximum attempts reached. Exiting." >&2
-        exit 1
-    fi
-    echo "Try again ($((MAX_ATTEMPTS - ATTEMPT + 1)) attempts remaining)."
-done
+    echo "Non-interactive mode: generated random Samba password."
+    echo "Samba user: ${USER}  password: ${SAMBA_PASS}"
+    echo "Save this password — it will not be shown again."
+fi
 
 # Write password to a temp env-file (never passed via -e / visible in ps)
 SAMBA_ENV=$(mktemp)
@@ -204,7 +236,12 @@ echo ""
 echo "========================================="
 echo " VPN Configuration for Secure Browser"
 echo "========================================="
-read -r -p "Path to WireGuard config file (leave blank to skip): " WG_CONFIG_PATH
+if [ -t 0 ]; then
+    read -r -p "Path to WireGuard config file (leave blank to skip): " WG_CONFIG_PATH
+else
+    WG_CONFIG_PATH=""
+    echo "Non-interactive mode: skipping VPN setup."
+fi
 
 VPN_ENABLED=false
 if [ -n "$WG_CONFIG_PATH" ]; then

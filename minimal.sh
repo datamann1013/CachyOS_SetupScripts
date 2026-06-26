@@ -65,6 +65,15 @@ if [ -z "$DRY_RUN" ]; then
     fi
 fi
 
+# --- 6. Add user to kvm group ---
+echo ">>> Adding user to kvm group (for VM access)..."
+if ! groups | grep -q '\bkvm\b'; then
+    run sudo usermod -aG kvm "$USER"
+    echo "Added $USER to kvm group. Log out/in for this to take effect."
+else
+    echo "User already in kvm group."
+fi
+
 echo "========================================="
 echo " Minimal Profile Setup Complete!"
 echo "========================================="

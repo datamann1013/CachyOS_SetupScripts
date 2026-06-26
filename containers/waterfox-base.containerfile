@@ -19,6 +19,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpulse0 \
     fonts-liberation \
     bzip2 \
+    libgl1-mesa-dri \
+    libgl1 \
+    libegl1 \
+    libgbm1 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN if id -u 1000 >/dev/null 2>&1; then userdel -r "$(getent passwd 1000 | cut -d: -f1)"; fi \
@@ -38,4 +42,4 @@ USER waterfox
 ENV HOME=/home/waterfox
 
 ENTRYPOINT ["/opt/waterfox/waterfox"]
-CMD ["--no-remote", "--profile", "/home/waterfox/.waterfox/default"]
+CMD ["--no-remote"]

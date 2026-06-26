@@ -41,8 +41,13 @@ run_script() {
         exit 1
     fi
     echo ""
-    echo ">>> Running: $1 ${DRY_RUN}"
-    bash "$script" ${DRY_RUN}
+    if [ -n "$DRY_RUN" ]; then
+        echo ">>> Running: $1 ${DRY_RUN}"
+        bash "$script" "$DRY_RUN"
+    else
+        echo ">>> Running: $1"
+        bash "$script"
+    fi
 }
 
 echo "========================================="
