@@ -95,6 +95,7 @@ RUN_OPTS=(
     -e DISPLAY="${DISPLAY:-:0}"
     -e PULSE_SERVER=unix:/tmp/pulse/native
     -e MOZ_DISABLE_CONTENT_SANDBOX=1
+    -v /tmp/.X11-unix:/tmp/.X11-unix:ro
     -v "$VOLUME:/home/waterfox":Z
     -v "${HOME}/BrowserDownloads:/home/waterfox/Downloads:z"
 )
@@ -362,6 +363,7 @@ exec podman run --rm \
     -v "${WAYLAND_SOCK}:/tmp/runtime/${WAYLAND_DISPLAY:-wayland-0}:ro" \
     -v /tmp/.X11-unix:/tmp/.X11-unix:ro \
     -e DISPLAY="${DISPLAY:-:0}" \
+    -v /tmp/.X11-unix:/tmp/.X11-unix:ro \
     -v "${HOME}/SecureDownloads:/home/waterfox/Downloads:Z" \
     localhost/waterfox-base
 SCRIPT
