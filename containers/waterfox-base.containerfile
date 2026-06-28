@@ -44,6 +44,12 @@ RUN curl -fsSL \
     && rm waterfox.tar.bz2 \
     && chown -R waterfox:waterfox /opt/waterfox
 
+RUN mkdir -p /opt/waterfox/defaults/pref \
+    && printf 'pref("general.config.filename", "waterfox.cfg");\npref("general.config.obscure_value", 0);\n' \
+       > /opt/waterfox/defaults/pref/autoconfig.js \
+    && printf '// First line must be a comment\n// Disable content sandbox for container compat (Widevine DRM)\nlockPref("security.sandbox.content.level", 0);\nlockPref("media.eme.enabled", true);\n' \
+       > /opt/waterfox/waterfox.cfg
+
 USER waterfox
 ENV HOME=/home/waterfox
 

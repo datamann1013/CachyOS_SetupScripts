@@ -96,12 +96,14 @@ WAYLAND_SOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/${WAYLAND_DISPLAY:-wayland-
 
 RUN_OPTS=(
     --name "$CONTAINER_NAME"
-    --security-opt no-new-privileges
+    --security-opt seccomp=unconfined
     --userns keep-id
     --net=host
     --device /dev/dri
+    --mount type=tmpfs,destination=/tmp/runtime
     -e PULSE_SERVER=unix:/tmp/pulse/native
     -e MOZ_DISABLE_CONTENT_SANDBOX=1
+    -e MOZ_DISABLE_GMP_SANDBOX=1
     -e MOZ_ENABLE_WAYLAND=1
     -e XDG_RUNTIME_DIR=/tmp/runtime
     -e WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
