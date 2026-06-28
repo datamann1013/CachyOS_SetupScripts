@@ -10,6 +10,16 @@ echo "========================================="
 echo " Starting Apps Profile Setup"
 echo "========================================="
 
+ensure_podman() {
+    sudo loginctl enable-linger "$USER" 2>/dev/null || true
+    if ! systemctl --user is-active podman.socket &>/dev/null; then
+        echo "Starting podman user socket..."
+        systemctl --user start podman.socket 2>/dev/null || true
+    fi
+}
+
+ensure_podman
+
 # Returns the primary non-virtual IPv4 address
 get_ip() {
     ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}'
@@ -57,6 +67,22 @@ cat > ~/.local/bin/waterfox-fun << 'SCRIPT'
 CONTAINER_NAME="waterfox-fun"
 IMAGE="localhost/waterfox-base"
 VOLUME="waterfox-fun-data"
+
+if [ "$(id -u)" -eq 0 ]; then
+    echo "ERROR: Do not run this as root/sudo. Rootless podman stores images in your user account." >&2
+    exit 1
+fi
+
+if ! systemctl --user is-active podman.socket &>/dev/null; then
+    echo "Podman socket not running, starting it..."
+    systemctl --user start podman.socket 2>/dev/null || true
+fi
+
+if ! podman image exists "$IMAGE" 2>/dev/null; then
+    echo "ERROR: Image $IMAGE not found." >&2
+    echo "Build it first: podman build -t $IMAGE -f ~/CachyOS_SetupScripts/containers/waterfox-base.containerfile ~/CachyOS_SetupScripts/containers/" >&2
+    exit 1
+fi
 
 XAUTH=$(find /run/user/$(id -u) -name 'xauth_*' -print -quit 2>/dev/null)
 PULSE_SOCK="/run/user/$(id -u)/pulse/native"
@@ -312,8 +338,15 @@ if [ -n "$WG_CONFIG_PATH" ]; then
             mkdir -p ~/.local/bin
             cat > ~/.local/bin/waterfox-secure << 'SCRIPT'
 #!/bin/bash
-# Runs Waterfox with all traffic through the gluetun VPN container.
-# Only ~/SecureDownloads is accessible.
+if [ "$(id -u)" -eq 0 ]; then
+    echo "ERROR: Do not run this as root/sudo. Rootless podman stores images in your user account." >&2
+    exit 1
+fi
+
+if ! systemctl --user is-active podman.socket &>/dev/null; then
+    systemctl --user start podman.socket 2>/dev/null || true
+fi
+
 if ! podman inspect --format '{{.State.Status}}' gluetun 2>/dev/null | grep -q '^running$'; then
     echo "Error: gluetun container is not running."
     echo "Start it with: systemctl --user start container-gluetun.service"

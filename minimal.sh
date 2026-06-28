@@ -74,6 +74,15 @@ else
     echo "User already in kvm group."
 fi
 
+# --- 7. Enable Podman rootless session autostart ---
+echo ">>> Enabling Podman rootless session autostart..."
+if [ -z "$DRY_RUN" ]; then
+    sudo loginctl enable-linger "$USER" 2>/dev/null || true
+    mkdir -p ~/.config/systemd/user
+    systemctl --user enable --now podman.socket 2>/dev/null || true
+    echo "Podman user socket enabled. Rootless containers will survive logout/reboot."
+fi
+
 echo "========================================="
 echo " Minimal Profile Setup Complete!"
 echo "========================================="

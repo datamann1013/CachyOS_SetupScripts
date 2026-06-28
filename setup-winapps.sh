@@ -27,6 +27,16 @@ echo "========================================="
 echo " Starting WinApps Profile Setup${DRY_RUN:+ (DRY RUN)}"
 echo "========================================="
 
+ensure_podman() {
+    sudo loginctl enable-linger "$USER" 2>/dev/null || true
+    if ! systemctl --user is-active podman.socket &>/dev/null; then
+        echo "Starting podman user socket..."
+        systemctl --user start podman.socket 2>/dev/null || true
+    fi
+}
+
+ensure_podman
+
 # --- 1. Install Dependencies ---
 echo ">>> Installing WinApps dependencies..."
 run sudo pacman -S --needed --noconfirm \
