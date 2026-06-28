@@ -27,6 +27,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libusb-1.0-0 \
     libpcsclite1 \
     libnss3 \
+    libpci3 \
+    libwayland-client0 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN if id -u 1000 >/dev/null 2>&1; then userdel -r "$(getent passwd 1000 | cut -d: -f1)"; fi \

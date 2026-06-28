@@ -84,23 +84,43 @@ if ! podman image exists "$IMAGE" 2>/dev/null; then
     exit 1
 fi
 
+VOLUME_PATH=$(podman volume inspect "$VOLUME" --format '{{.Mountpoint}}' 2>/dev/null)
+if [ -n "$VOLUME_PATH" ] && [ "$(stat -c '%U' "$VOLUME_PATH" 2>/dev/null)" != "$USER" ]; then
+    echo "Fixing volume ownership for --userns keep-id..."
+    sudo chown -R "$(id -u):$(id -g)" "$VOLUME_PATH"
+fi
+
 XAUTH=$(find /run/user/$(id -u) -name 'xauth_*' -print -quit 2>/dev/null)
 PULSE_SOCK="/run/user/$(id -u)/pulse/native"
+WAYLAND_SOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/${WAYLAND_DISPLAY:-wayland-0}"
 
 RUN_OPTS=(
     --name "$CONTAINER_NAME"
     --security-opt no-new-privileges
+    --userns keep-id
     --net=host
     --device /dev/dri
-    -e DISPLAY="${DISPLAY:-:0}"
     -e PULSE_SERVER=unix:/tmp/pulse/native
     -e MOZ_DISABLE_CONTENT_SANDBOX=1
-    -v /tmp/.X11-unix:/tmp/.X11-unix:ro
+    -e MOZ_ENABLE_WAYLAND=1
+    -e XDG_RUNTIME_DIR=/tmp/runtime
+    -e WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
     -v "$VOLUME:/home/waterfox":Z
     -v "${HOME}/BrowserDownloads:/home/waterfox/Downloads:z"
 )
 
-if [ -n "$XAUTH" ]; then
+if [ -S "$WAYLAND_SOCK" ]; then
+    RUN_OPTS+=(-v "$WAYLAND_SOCK:/tmp/runtime/${WAYLAND_DISPLAY:-wayland-0}:ro")
+fi
+
+if [ -e /tmp/.X11-unix ]; then
+    RUN_OPTS+=(
+        -v /tmp/.X11-unix:/tmp/.X11-unix:ro
+        -e DISPLAY="${DISPLAY:-:0}"
+    )
+fi
+
+if [ -n "$XAUTH" ] && [ -n "${DISPLAY:-}" ]; then
     RUN_OPTS+=(
         -v "$XAUTH:/tmp/.Xauthority:ro"
         -e XAUTHORITY=/tmp/.Xauthority
@@ -354,18 +374,25 @@ if ! podman inspect --format '{{.State.Status}}' gluetun 2>/dev/null | grep -q '
     exit 1
 fi
 WAYLAND_SOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/${WAYLAND_DISPLAY:-wayland-0}"
-exec podman run --rm \
-    --name "waterfox-secure-$$" \
-    --network=container:gluetun \
-    --security-opt no-new-privileges \
-    -e WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}" \
-    -e XDG_RUNTIME_DIR=/tmp/runtime \
-    -v "${WAYLAND_SOCK}:/tmp/runtime/${WAYLAND_DISPLAY:-wayland-0}:ro" \
-    -v /tmp/.X11-unix:/tmp/.X11-unix:ro \
-    -e DISPLAY="${DISPLAY:-:0}" \
-    -v /tmp/.X11-unix:/tmp/.X11-unix:ro \
-    -v "${HOME}/SecureDownloads:/home/waterfox/Downloads:Z" \
-    localhost/waterfox-base
+RUN_OPTS=(
+    --name "waterfox-secure-$$"
+    --network=container:gluetun
+    --security-opt no-new-privileges
+    -e PULSE_SERVER=unix:/tmp/pulse/native
+    -e MOZ_DISABLE_CONTENT_SANDBOX=1
+    -e MOZ_ENABLE_WAYLAND=1
+    -e XDG_RUNTIME_DIR=/tmp/runtime
+    -e WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
+    -v "${WAYLAND_SOCK}:/tmp/runtime/${WAYLAND_DISPLAY:-wayland-0}:ro"
+    -v "${HOME}/SecureDownloads:/home/waterfox/Downloads:Z"
+)
+if [ -e /tmp/.X11-unix ]; then
+    RUN_OPTS+=(
+        -v /tmp/.X11-unix:/tmp/.X11-unix:ro
+        -e DISPLAY="${DISPLAY:-:0}"
+    )
+fi
+exec podman run --rm "${RUN_OPTS[@]}" localhost/waterfox-base
 SCRIPT
             chmod +x ~/.local/bin/waterfox-secure
 
