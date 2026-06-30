@@ -89,7 +89,33 @@ else
     echo "    Tor Browser already installed at ${TOR_DIR}"
 fi
 
-# --- 4. Create Download Directories ---
+# --- 4. Install Browser Icons ---
+echo ">>> Installing browser icons..."
+mkdir -p ~/.local/share/icons
+
+WATERFOX_ICON_SRC="${WATERFOX_DIR}/browser/chrome/icons/default/default128.png"
+TOR_ICON_SRC="${TOR_DIR}/Browser/browser/chrome/icons/default/default128.png"
+
+if [ -f "${WATERFOX_ICON_SRC}" ]; then
+    cp "${WATERFOX_ICON_SRC}" ~/.local/share/icons/waterfox-fun.png
+fi
+
+if [ -f "${TOR_ICON_SRC}" ]; then
+    cp "${TOR_ICON_SRC}" ~/.local/share/icons/thor-fun.png
+fi
+
+cat > ~/.local/share/icons/waterfox-secure.svg << 'SVG'
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <path d="M64 6 L114 28 L114 72 Q114 106 64 122 Q14 106 14 72 L14 28 Z" fill="#1a6b3c" stroke="#0f4d2b" stroke-width="2"/>
+  <path d="M64 14 L106 33 L106 70 Q106 100 64 114 Q22 100 22 70 L22 33 Z" fill="#27ae60"/>
+  <path d="M52 58 L52 46 Q52 34 64 34 Q76 34 76 46 L76 58" fill="none" stroke="white" stroke-width="5" stroke-linecap="round"/>
+  <rect x="44" y="58" width="40" height="32" rx="4" fill="white"/>
+  <circle cx="64" cy="70" r="4" fill="#27ae60"/>
+  <rect x="62" y="72" width="4" height="8" rx="1" fill="#27ae60"/>
+</svg>
+SVG
+
+# --- 5. Create Download Directories ---
 echo ">>> Creating file share directories..."
 mkdir -p ~/BrowserDownloads ~/SecureDownloads ~/MachineFiles
 chmod 755 ~/BrowserDownloads ~/SecureDownloads ~/MachineFiles
@@ -139,8 +165,7 @@ BWRAP_ARGS=(
     --ro-bind /sbin /sbin
     --ro-bind /etc /etc
     --ro-bind-try /var /var
-    --dev /dev
-    --dev-bind /dev/dri /dev/dri
+    --dev-bind /dev /dev
     --proc /proc
     --ro-bind /sys /sys
     --tmpfs /tmp
@@ -170,16 +195,13 @@ if [ -S "${RUNTIME_DIR}/bus" ]; then
     BWRAP_ARGS+=(--ro-bind "${RUNTIME_DIR}/bus" "${RUNTIME_DIR}/bus")
 fi
 
-for dev in /dev/hidraw*; do
-    [ -e "$dev" ] && BWRAP_ARGS+=(--dev-bind "$dev" "$dev")
-done
-
 if [ -S /run/pcscd/pcscd.comm ]; then
     BWRAP_ARGS+=(--ro-bind /run/pcscd/pcscd.comm /run/pcscd/pcscd.comm)
 fi
 
 exec bwrap "${BWRAP_ARGS[@]}" \
     --setenv HOME /home/waterfox \
+    --setenv PATH /usr/local/bin:/usr/bin:/bin \
     --setenv MOZ_ENABLE_WAYLAND 1 \
     --setenv MOZ_DISABLE_GMP_SANDBOX 1 \
     --setenv WAYLAND_DISPLAY "${WAYLAND_DISPLAY:-wayland-0}" \
@@ -195,7 +217,7 @@ cat > ~/.local/share/applications/waterfox-fun.desktop << EOF
 Name=Waterfox (Fun)
 Comment=Isolated browser — downloads go to ~/BrowserDownloads only
 Exec=${HOME}/.local/bin/waterfox-fun
-Icon=waterfox
+Icon=${HOME}/.local/share/icons/waterfox-fun.png
 Terminal=false
 Type=Application
 Categories=Network;WebBrowser;
@@ -206,7 +228,10 @@ EOF
 cat > ~/.local/bin/thor-fun << 'LAUNCHER'
 #!/bin/bash
 # Tor Browser (Fun) — bubblewrap sandbox with clean mount namespace
-# All traffic routed through the Tor network
+# All browser traffic routed through the Tor network via bundled Tor daemon.
+# Tor Browser stores profile + Tor state inside its own directory tree,
+# so the install dir must be writable (not ro-bind like Waterfox).
+# Updates are handled by Tor Browser's built-in updater, NOT setup-apps.sh.
 
 set -euo pipefail
 
@@ -231,7 +256,7 @@ BWRAP_ARGS=(
     --unshare-all
     --share-net
     --die-with-parent
-    --hostname remotestation
+    --hostname thor-sandbox
 
     --ro-bind /usr /usr
     --ro-bind /lib /lib
@@ -240,8 +265,7 @@ BWRAP_ARGS=(
     --ro-bind /sbin /sbin
     --ro-bind /etc /etc
     --ro-bind-try /var /var
-    --dev /dev
-    --dev-bind /dev/dri /dev/dri
+    --dev-bind /dev /dev
     --proc /proc
     --ro-bind /sys /sys
     --tmpfs /tmp
@@ -249,7 +273,7 @@ BWRAP_ARGS=(
 
     --bind "${DATA_DIR}" /home/thor
     --bind "${DOWNLOAD_DIR}" /home/thor/Downloads
-    --bind "${TOR_DIR}" /home/thor/tor-browser
+    --bind "${TOR_DIR}" /opt/tor-browser
 
     --ro-bind "${RUNTIME_DIR}/pulse" "${RUNTIME_DIR}/pulse"
     --setenv PULSE_SERVER "unix:${RUNTIME_DIR}/pulse/native"
@@ -273,11 +297,12 @@ fi
 
 exec bwrap "${BWRAP_ARGS[@]}" \
     --setenv HOME /home/thor \
+    --setenv PATH /usr/local/bin:/usr/bin:/bin \
     --setenv WAYLAND_DISPLAY "${WAYLAND_DISPLAY:-wayland-0}" \
     --setenv XDG_RUNTIME_DIR "${RUNTIME_DIR}" \
     --setenv DISPLAY "${DISPLAY:-:0}" \
     --setenv XAUTHORITY /tmp/.Xauthority \
-    /home/thor/tor-browser/Browser/start-tor-browser --no-remote
+    /opt/tor-browser/Browser/start-tor-browser --no-remote
 LAUNCHER
 chmod +x ~/.local/bin/thor-fun
 
@@ -286,7 +311,7 @@ cat > ~/.local/share/applications/thor-fun.desktop << EOF
 Name=Tor Browser (Fun)
 Comment=Isolated onion browser — all traffic through Tor network
 Exec=${HOME}/.local/bin/thor-fun
-Icon=tor-browser
+Icon=${HOME}/.local/share/icons/thor-fun.png
 Terminal=false
 Type=Application
 Categories=Network;WebBrowser;
@@ -520,8 +545,7 @@ BWRAP_ARGS=(
     --ro-bind /sbin /sbin
     --ro-bind /etc /etc
     --ro-bind-try /var /var
-    --dev /dev
-    --dev-bind /dev/dri /dev/dri
+    --dev-bind /dev /dev
     --proc /proc
     --ro-bind /sys /sys
     --tmpfs /tmp
@@ -554,6 +578,7 @@ fi
 exec nsenter --net=/proc/${GLUETUN_PID}/ns/net -- \
     bwrap "${BWRAP_ARGS[@]}" \
     --setenv HOME /home/waterfox \
+    --setenv PATH /usr/local/bin:/usr/bin:/bin \
     --setenv MOZ_ENABLE_WAYLAND 1 \
     --setenv MOZ_DISABLE_GMP_SANDBOX 1 \
     --setenv WAYLAND_DISPLAY "${WAYLAND_DISPLAY:-wayland-0}" \
@@ -569,7 +594,7 @@ LAUNCHER
 Name=Waterfox (Secure VPN)
 Comment=Isolated browser — all traffic through WireGuard VPN
 Exec=${HOME}/.local/bin/waterfox-secure
-Icon=waterfox
+Icon=${HOME}/.local/share/icons/waterfox-secure.svg
 Terminal=false
 Type=Application
 Categories=Network;WebBrowser;
