@@ -129,6 +129,7 @@ echo "[SYSTEM]"
 check_cmd "pacman available"        pacman
 check_cmd "podman available"        podman    "sudo pacman -S podman"
 check_cmd "flatpak available"       flatpak   "sudo pacman -S flatpak"
+check_cmd "bwrap available"         bwrap     "sudo pacman -S bubblewrap"
 check_cmd "firewall-cmd available"  firewall-cmd "sudo pacman -S firewalld"
 check_cmd "systemctl available"     systemctl
 check_cmd "ip available"            ip        "sudo pacman -S iproute2"
@@ -203,7 +204,14 @@ fi
 echo ""
 echo "[APPS PROFILE — FUN BROWSER]"
 
-check_container_image "waterfox-base image built" "localhost/waterfox-base"
+check_cmd "bwrap installed" bwrap "sudo pacman -S bubblewrap"
+
+if [ -x "${HOME}/.local/share/waterfox-bwrap/waterfox/waterfox" ]; then
+    pass "Waterfox binary installed"
+else
+    fail "Waterfox binary installed" "Re-run setup-apps.sh to download Waterfox"
+fi
+
 check_file "~/.local/bin/waterfox-fun launcher exists"  "${HOME}/.local/bin/waterfox-fun"
 check_file "waterfox-fun.desktop exists"                "${HOME}/.local/share/applications/waterfox-fun.desktop"
 
@@ -213,14 +221,24 @@ else
     fail "waterfox-fun launcher is executable" "chmod +x ${HOME}/.local/bin/waterfox-fun"
 fi
 
-if [ -f "${HOME}/.local/share/applications/waterfox-fun.desktop" ]; then
-    if grep -q 'filesystem=home' "${HOME}/.local/share/applications/waterfox-fun.desktop"; then
-        fail "waterfox-fun.desktop does NOT grant --filesystem=home" \
-             "Remove --filesystem=home from the desktop file — browser should only access ~/BrowserDownloads"
-    else
-        pass "waterfox-fun.desktop does not expose host home"
-    fi
+check_dir "waterfox-fun data dir exists" "${HOME}/.local/share/waterfox-fun-bwrap"
+
+if [ -x "${HOME}/.local/share/tor-browser-bwrap/tor-browser/Browser/start-tor-browser" ]; then
+    pass "Tor Browser binary installed"
+else
+    fail "Tor Browser binary installed" "Re-run setup-apps.sh to download Tor Browser"
 fi
+
+check_file "~/.local/bin/thor-fun launcher exists"  "${HOME}/.local/bin/thor-fun"
+check_file "thor-fun.desktop exists"                "${HOME}/.local/share/applications/thor-fun.desktop"
+
+if [ -x "${HOME}/.local/bin/thor-fun" ]; then
+    pass "thor-fun launcher is executable"
+else
+    fail "thor-fun launcher is executable" "chmod +x ${HOME}/.local/bin/thor-fun"
+fi
+
+check_dir "thor-fun data dir exists" "${HOME}/.local/share/thor-fun-bwrap"
 
 echo ""
 echo "[APPS PROFILE — FIREJAIL]"
@@ -309,6 +327,7 @@ if [ -f "$WG_CONF" ]; then
         "${HOME}/.local/share/applications/waterfox-secure.desktop"
     check_file "~/.local/bin/waterfox-secure exists" \
         "${HOME}/.local/bin/waterfox-secure"
+    check_dir  "waterfox-secure data dir exists" "${HOME}/.local/share/waterfox-secure-bwrap"
     check_file "Gluetun systemd service file exists" \
         "${HOME}/.config/systemd/user/container-gluetun.service"
     check_service_enabled "Gluetun service enabled" container-gluetun.service

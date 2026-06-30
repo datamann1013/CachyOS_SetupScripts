@@ -1,6 +1,10 @@
 #!/bin/bash
 # setup-apps.sh - Part 2 of the modular CachyOS setup (Apps + Isolation + VPN)
 # Run AFTER minimal.sh
+#
+# Browsers use bubblewrap (bwrap) for namespace isolation instead of podman.
+# bwrap creates a clean mount namespace with no overlay/container fingerprints,
+# which is required for Widevine DRM (Netflix, Spotify web, etc.) to work.
 
 set -euo pipefail
 
@@ -20,7 +24,6 @@ ensure_podman() {
 
 ensure_podman
 
-# Returns the primary non-virtual IPv4 address
 get_ip() {
     ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}'
 }
@@ -44,113 +47,147 @@ flatpak install --user -y flathub \
     com.github.tchx84.Flatseal \
     org.onlyoffice.desktopeditors
 
-# --- 3. Build Waterfox Container Image ---
-echo ">>> Building Waterfox container image..."
-CONTAINERFILE="${SCRIPT_DIR}/containers/waterfox-base.containerfile"
-if [ ! -f "$CONTAINERFILE" ]; then
-    echo "ERROR: Missing ${CONTAINERFILE}" >&2
-    exit 1
+# --- 3. Install Browser Binaries ---
+echo ">>> Installing browser binaries..."
+
+WATERFOX_VERSION="6.6.15"
+WATERFOX_SHA512="7f1b1075385e0ac9f59017a69731a0d6fee27054ea9f594251a58b3851f3fc27de5365194e35bc20cf262b6dab9be64c45d48513532fb838bfb004860f25913a"
+WATERFOX_DIR="${HOME}/.local/share/waterfox-bwrap/waterfox"
+
+if [ ! -x "${WATERFOX_DIR}/waterfox" ]; then
+    echo "    Downloading Waterfox ${WATERFOX_VERSION}..."
+    TMPDIR=$(mktemp -d)
+    curl -fsSL \
+        "https://cdn.waterfox.com/waterfox/releases/${WATERFOX_VERSION}/Linux_x86_64/waterfox-${WATERFOX_VERSION}.tar.bz2" \
+        -o "${TMPDIR}/waterfox.tar.bz2"
+    echo "${WATERFOX_SHA512}  ${TMPDIR}/waterfox.tar.bz2" | sha512sum -c -
+    rm -rf "$(dirname "${WATERFOX_DIR}")"
+    mkdir -p "$(dirname "${WATERFOX_DIR}")"
+    tar -xjf "${TMPDIR}/waterfox.tar.bz2" -C "$(dirname "${WATERFOX_DIR}")"
+    rm -rf "${TMPDIR}"
+    echo "    Waterfox installed to ${WATERFOX_DIR}"
+else
+    echo "    Waterfox already installed at ${WATERFOX_DIR}"
 fi
-podman build -t localhost/waterfox-base -f "$CONTAINERFILE" "${SCRIPT_DIR}/containers/"
+
+TOR_VERSION="15.0.17"
+TOR_DIR="${HOME}/.local/share/tor-browser-bwrap/tor-browser"
+
+if [ ! -x "${TOR_DIR}/Browser/start-tor-browser" ]; then
+    echo "    Downloading Tor Browser ${TOR_VERSION}..."
+    TMPDIR=$(mktemp -d)
+    curl -fsSL \
+        "https://dist.torproject.org/torbrowser/${TOR_VERSION}/tor-browser-linux-x86_64-${TOR_VERSION}.tar.xz" \
+        -o "${TMPDIR}/tor-browser.tar.xz"
+    rm -rf "$(dirname "${TOR_DIR}")"
+    mkdir -p "$(dirname "${TOR_DIR}")"
+    tar -xJf "${TMPDIR}/tor-browser.tar.xz" -C "$(dirname "${TOR_DIR}")"
+    chmod +x "${TOR_DIR}/Browser/start-tor-browser" "${TOR_DIR}/Browser/firefox"
+    rm -rf "${TMPDIR}"
+    echo "    Tor Browser installed to ${TOR_DIR}"
+else
+    echo "    Tor Browser already installed at ${TOR_DIR}"
+fi
 
 # --- 4. Create Download Directories ---
 echo ">>> Creating file share directories..."
 mkdir -p ~/BrowserDownloads ~/SecureDownloads ~/MachineFiles
 chmod 755 ~/BrowserDownloads ~/SecureDownloads ~/MachineFiles
 
-# --- 5. Fun Browser Launcher ---
-echo ">>> Creating Fun browser launcher..."
+# --- 5. Browser Launchers ---
+echo ">>> Creating browser launchers..."
 mkdir -p ~/.local/bin ~/.local/share/applications
 
-cat > ~/.local/bin/waterfox-fun << 'SCRIPT'
+# --- 5a. Waterfox Fun Launcher ---
+cat > ~/.local/bin/waterfox-fun << 'LAUNCHER'
 #!/bin/bash
-CONTAINER_NAME="waterfox-fun"
-IMAGE="localhost/waterfox-base"
-VOLUME="waterfox-fun-data"
+# Waterfox (Fun) — bubblewrap sandbox with clean mount namespace
+# No overlay/container fingerprints — Widevine DRM compatible
 
-if [ "$(id -u)" -eq 0 ]; then
-    echo "ERROR: Do not run this as root/sudo. Rootless podman stores images in your user account." >&2
+set -euo pipefail
+
+WATERFOX_DIR="${HOME}/.local/share/waterfox-bwrap/waterfox"
+DATA_DIR="${HOME}/.local/share/waterfox-fun-bwrap"
+DOWNLOAD_DIR="${HOME}/BrowserDownloads"
+
+if [ ! -x "${WATERFOX_DIR}/waterfox" ]; then
+    echo "ERROR: Waterfox not found at ${WATERFOX_DIR}" >&2
+    echo "Re-run setup-apps.sh to install it." >&2
     exit 1
 fi
 
-if ! systemctl --user is-active podman.socket &>/dev/null; then
-    echo "Podman socket not running, starting it..."
-    systemctl --user start podman.socket 2>/dev/null || true
-fi
+mkdir -p "${DATA_DIR}" "${DOWNLOAD_DIR}"
 
-if ! podman image exists "$IMAGE" 2>/dev/null; then
-    echo "ERROR: Image $IMAGE not found." >&2
-    echo "Build it first: podman build -t $IMAGE -f ~/CachyOS_SetupScripts/containers/waterfox-base.containerfile ~/CachyOS_SetupScripts/containers/" >&2
-    exit 1
-fi
+find "${DATA_DIR}" -name '.parentlock' -delete 2>/dev/null || true
+find "${DATA_DIR}" -name 'lock' -delete 2>/dev/null || true
 
-VOLUME_PATH=$(podman volume inspect "$VOLUME" --format '{{.Mountpoint}}' 2>/dev/null)
-if [ -n "$VOLUME_PATH" ] && [ "$(stat -c '%U' "$VOLUME_PATH" 2>/dev/null)" != "$USER" ]; then
-    echo "Fixing volume ownership for --userns keep-id..."
-    sudo chown -R "$(id -u):$(id -g)" "$VOLUME_PATH"
-fi
+UID_NUM=$(id -u)
+RUNTIME_DIR="/run/user/${UID_NUM}"
+WAYLAND_SOCK="${XDG_RUNTIME_DIR:-${RUNTIME_DIR}}/${WAYLAND_DISPLAY:-wayland-0}"
+XAUTH=$(find "${RUNTIME_DIR}" -name 'xauth_*' -print -quit 2>/dev/null || true)
 
-XAUTH=$(find /run/user/$(id -u) -name 'xauth_*' -print -quit 2>/dev/null)
-PULSE_SOCK="/run/user/$(id -u)/pulse/native"
-WAYLAND_SOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/${WAYLAND_DISPLAY:-wayland-0}"
+BWRAP_ARGS=(
+    --unshare-all
+    --share-net
+    --die-with-parent
+    --hostname remotestation
 
-RUN_OPTS=(
-    --name "$CONTAINER_NAME"
-    --security-opt seccomp=unconfined
-    --userns keep-id
-    --net=host
-    --device /dev/dri
-    --mount type=tmpfs,destination=/tmp/runtime
-    -e PULSE_SERVER=unix:/tmp/pulse/native
-    -e MOZ_DISABLE_CONTENT_SANDBOX=1
-    -e MOZ_DISABLE_GMP_SANDBOX=1
-    -e MOZ_ENABLE_WAYLAND=1
-    -e XDG_RUNTIME_DIR=/tmp/runtime
-    -e WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
-    -v "$VOLUME:/home/waterfox":Z
-    -v "${HOME}/BrowserDownloads:/home/waterfox/Downloads:z"
+    --ro-bind /usr /usr
+    --ro-bind /lib /lib
+    --ro-bind /lib64 /lib64
+    --ro-bind /bin /bin
+    --ro-bind /sbin /sbin
+    --ro-bind /etc /etc
+    --ro-bind-try /var /var
+    --dev /dev
+    --dev-bind /dev/dri /dev/dri
+    --proc /proc
+    --ro-bind /sys /sys
+    --tmpfs /tmp
+    --tmpfs /run
+
+    --bind "${DATA_DIR}" /home/waterfox
+    --bind "${DOWNLOAD_DIR}" /home/waterfox/Downloads
+    --ro-bind "${WATERFOX_DIR}" /opt/waterfox
+
+    --ro-bind "${RUNTIME_DIR}/pulse" "${RUNTIME_DIR}/pulse"
+    --setenv PULSE_SERVER "unix:${RUNTIME_DIR}/pulse/native"
 )
 
-if [ -S "$WAYLAND_SOCK" ]; then
-    RUN_OPTS+=(-v "$WAYLAND_SOCK:/tmp/runtime/${WAYLAND_DISPLAY:-wayland-0}:ro")
+if [ -S "${WAYLAND_SOCK}" ]; then
+    BWRAP_ARGS+=(--ro-bind "${WAYLAND_SOCK}" "${RUNTIME_DIR}/${WAYLAND_DISPLAY:-wayland-0}")
 fi
 
 if [ -e /tmp/.X11-unix ]; then
-    RUN_OPTS+=(
-        -v /tmp/.X11-unix:/tmp/.X11-unix:ro
-        -e DISPLAY="${DISPLAY:-:0}"
-    )
+    BWRAP_ARGS+=(--ro-bind /tmp/.X11-unix /tmp/.X11-unix)
 fi
 
-if [ -n "$XAUTH" ] && [ -n "${DISPLAY:-}" ]; then
-    RUN_OPTS+=(
-        -v "$XAUTH:/tmp/.Xauthority:ro"
-        -e XAUTHORITY=/tmp/.Xauthority
-    )
+if [ -n "${XAUTH:-}" ] && [ -f "${XAUTH}" ]; then
+    BWRAP_ARGS+=(--ro-bind "${XAUTH}" "/tmp/.Xauthority")
 fi
 
-if [ -S "$PULSE_SOCK" ]; then
-    RUN_OPTS+=(-v "$PULSE_SOCK:/tmp/pulse/native:z")
+if [ -S "${RUNTIME_DIR}/bus" ]; then
+    BWRAP_ARGS+=(--ro-bind "${RUNTIME_DIR}/bus" "${RUNTIME_DIR}/bus")
 fi
 
 for dev in /dev/hidraw*; do
-    [ -e "$dev" ] && RUN_OPTS+=(--device "$dev")
-done
-
-for dev in /dev/bus/usb/*/*; do
-    [ -e "$dev" ] && RUN_OPTS+=(--device "$dev")
+    [ -e "$dev" ] && BWRAP_ARGS+=(--dev-bind "$dev" "$dev")
 done
 
 if [ -S /run/pcscd/pcscd.comm ]; then
-    RUN_OPTS+=(
-        -v /run/pcscd/pcscd.comm:/run/pcscd/pcscd.comm:z
-        -e PCSCLITE_CSOCK_NAME=/run/pcscd/pcscd.comm
-    )
+    BWRAP_ARGS+=(--ro-bind /run/pcscd/pcscd.comm /run/pcscd/pcscd.comm)
 fi
 
-podman rm -f "$CONTAINER_NAME" 2>/dev/null
-podman run --rm "${RUN_OPTS[@]}" "$IMAGE"
-SCRIPT
+exec bwrap "${BWRAP_ARGS[@]}" \
+    --setenv HOME /home/waterfox \
+    --setenv MOZ_ENABLE_WAYLAND 1 \
+    --setenv MOZ_DISABLE_GMP_SANDBOX 1 \
+    --setenv WAYLAND_DISPLAY "${WAYLAND_DISPLAY:-wayland-0}" \
+    --setenv XDG_RUNTIME_DIR "${RUNTIME_DIR}" \
+    --setenv DISPLAY "${DISPLAY:-:0}" \
+    --setenv XAUTHORITY /tmp/.Xauthority \
+    /opt/waterfox/waterfox --no-remote
+LAUNCHER
 chmod +x ~/.local/bin/waterfox-fun
 
 cat > ~/.local/share/applications/waterfox-fun.desktop << EOF
@@ -165,7 +202,98 @@ Categories=Network;WebBrowser;
 StartupNotify=true
 EOF
 
-# --- 5b. Udev rules for FIDO2/U2F security keys ---
+# --- 5b. Tor Browser Fun Launcher ---
+cat > ~/.local/bin/thor-fun << 'LAUNCHER'
+#!/bin/bash
+# Tor Browser (Fun) — bubblewrap sandbox with clean mount namespace
+# All traffic routed through the Tor network
+
+set -euo pipefail
+
+TOR_DIR="${HOME}/.local/share/tor-browser-bwrap/tor-browser"
+DATA_DIR="${HOME}/.local/share/thor-fun-bwrap"
+DOWNLOAD_DIR="${HOME}/BrowserDownloads"
+
+if [ ! -x "${TOR_DIR}/Browser/start-tor-browser" ]; then
+    echo "ERROR: Tor Browser not found at ${TOR_DIR}" >&2
+    echo "Re-run setup-apps.sh to install it." >&2
+    exit 1
+fi
+
+mkdir -p "${DATA_DIR}" "${DOWNLOAD_DIR}"
+
+UID_NUM=$(id -u)
+RUNTIME_DIR="/run/user/${UID_NUM}"
+WAYLAND_SOCK="${XDG_RUNTIME_DIR:-${RUNTIME_DIR}}/${WAYLAND_DISPLAY:-wayland-0}"
+XAUTH=$(find "${RUNTIME_DIR}" -name 'xauth_*' -print -quit 2>/dev/null || true)
+
+BWRAP_ARGS=(
+    --unshare-all
+    --share-net
+    --die-with-parent
+    --hostname remotestation
+
+    --ro-bind /usr /usr
+    --ro-bind /lib /lib
+    --ro-bind /lib64 /lib64
+    --ro-bind /bin /bin
+    --ro-bind /sbin /sbin
+    --ro-bind /etc /etc
+    --ro-bind-try /var /var
+    --dev /dev
+    --dev-bind /dev/dri /dev/dri
+    --proc /proc
+    --ro-bind /sys /sys
+    --tmpfs /tmp
+    --tmpfs /run
+
+    --bind "${DATA_DIR}" /home/thor
+    --bind "${DOWNLOAD_DIR}" /home/thor/Downloads
+    --bind "${TOR_DIR}" /home/thor/tor-browser
+
+    --ro-bind "${RUNTIME_DIR}/pulse" "${RUNTIME_DIR}/pulse"
+    --setenv PULSE_SERVER "unix:${RUNTIME_DIR}/pulse/native"
+)
+
+if [ -S "${WAYLAND_SOCK}" ]; then
+    BWRAP_ARGS+=(--ro-bind "${WAYLAND_SOCK}" "${RUNTIME_DIR}/${WAYLAND_DISPLAY:-wayland-0}")
+fi
+
+if [ -e /tmp/.X11-unix ]; then
+    BWRAP_ARGS+=(--ro-bind /tmp/.X11-unix /tmp/.X11-unix)
+fi
+
+if [ -n "${XAUTH:-}" ] && [ -f "${XAUTH}" ]; then
+    BWRAP_ARGS+=(--ro-bind "${XAUTH}" "/tmp/.Xauthority")
+fi
+
+if [ -S "${RUNTIME_DIR}/bus" ]; then
+    BWRAP_ARGS+=(--ro-bind "${RUNTIME_DIR}/bus" "${RUNTIME_DIR}/bus")
+fi
+
+exec bwrap "${BWRAP_ARGS[@]}" \
+    --setenv HOME /home/thor \
+    --setenv WAYLAND_DISPLAY "${WAYLAND_DISPLAY:-wayland-0}" \
+    --setenv XDG_RUNTIME_DIR "${RUNTIME_DIR}" \
+    --setenv DISPLAY "${DISPLAY:-:0}" \
+    --setenv XAUTHORITY /tmp/.Xauthority \
+    /home/thor/tor-browser/Browser/start-tor-browser --no-remote
+LAUNCHER
+chmod +x ~/.local/bin/thor-fun
+
+cat > ~/.local/share/applications/thor-fun.desktop << EOF
+[Desktop Entry]
+Name=Tor Browser (Fun)
+Comment=Isolated onion browser — all traffic through Tor network
+Exec=${HOME}/.local/bin/thor-fun
+Icon=tor-browser
+Terminal=false
+Type=Application
+Categories=Network;WebBrowser;
+StartupNotify=true
+EOF
+
+# --- 5c. Udev rules for FIDO2/U2F security keys ---
 echo ">>> Installing udev rules for FIDO2 security keys..."
 sudo tee /etc/udev/rules.d/70-u2f-titan.rules > /dev/null << 'UDEV'
 # Google Titan Security Key v2 - USB device node
@@ -178,7 +306,7 @@ UDEV
 sudo udevadm control --reload-rules 2>/dev/null
 sudo udevadm trigger 2>/dev/null
 
-# --- 5c. PC/SC smart card daemon for CTAP2/WebAuthn ---
+# --- 5d. PC/SC smart card daemon for CTAP2/WebAuthn ---
 echo ">>> Enabling pcscd for smart card / FIDO2 access..."
 sudo pacman -S --needed --noconfirm ccid pcsclite 2>/dev/null
 sudo systemctl enable --now pcscd.socket
@@ -186,12 +314,9 @@ sudo systemctl enable --now pcscd.socket
 # --- 6. Samba File Server ---
 echo ">>> Setting up Samba file server..."
 
-# Stop and remove existing container cleanly
 podman stop samba-server 2>/dev/null || true
 podman rm samba-server 2>/dev/null || true
 
-# Prompt for Samba password — max 3 attempts
-# If stdin is not a terminal (e.g. piped over SSH), generate a random password
 MAX_ATTEMPTS=3
 ATTEMPT=1
 if [ -t 0 ]; then
@@ -220,7 +345,6 @@ else
     echo "Save this password — it will not be shown again."
 fi
 
-# Write password to a temp env-file (never passed via -e / visible in ps)
 SAMBA_ENV=$(mktemp)
 chmod 600 "$SAMBA_ENV"
 printf 'USER=%s;%s\n' "${USER}" "${SAMBA_PASS}" > "$SAMBA_ENV"
@@ -239,11 +363,9 @@ podman run -d \
 
 rm -f "$SAMBA_ENV"
 
-# Firewall rules for Samba high ports
 sudo firewall-cmd --add-port=1139/tcp --add-port=1445/tcp --permanent 2>/dev/null || true
 sudo firewall-cmd --reload 2>/dev/null || true
 
-# systemd user service for Samba auto-start
 mkdir -p ~/.config/systemd/user
 podman generate systemd --name samba-server > ~/.config/systemd/user/container-samba-server.service
 systemctl --user daemon-reload
@@ -284,7 +406,6 @@ firejail --private --net=none "$APP" "$FILE"
 SCRIPT
 chmod +x ~/bin/sandbox-open
 
-# Add ~/bin to PATH for Bash, Zsh, and Fish
 grep -qxF 'export PATH="$HOME/bin:$PATH"' ~/.bashrc 2>/dev/null \
     || echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc
 grep -qxF 'export PATH="$HOME/bin:$PATH"' ~/.zshrc 2>/dev/null \
@@ -293,7 +414,6 @@ if command -v fish &>/dev/null; then
     fish -c "fish_add_path ~/bin" 2>/dev/null || true
 fi
 
-# KDE/Dolphin right-click service menu
 mkdir -p ~/.local/share/kio/servicemenus
 cat > ~/.local/share/kio/servicemenus/sandbox-open.desktop << EOF
 [Desktop Entry]
@@ -326,7 +446,6 @@ if [ -n "$WG_CONFIG_PATH" ]; then
     if [ ! -f "$WG_CONFIG_PATH" ]; then
         echo "WARNING: File not found: ${WG_CONFIG_PATH} — skipping VPN setup." >&2
     else
-        # Validate minimal WireGuard config structure
         if ! grep -q '^\[Interface\]' "$WG_CONFIG_PATH" || ! grep -q '^\[Peer\]' "$WG_CONFIG_PATH"; then
             echo "WARNING: WireGuard config missing [Interface] or [Peer] section — skipping VPN setup." >&2
         else
@@ -336,11 +455,9 @@ if [ -n "$WG_CONFIG_PATH" ]; then
             cp "$WG_CONFIG_PATH" ~/vpn/wireguard/wg0.conf
             chmod 600 ~/vpn/wireguard/wg0.conf
 
-            # Clean up any previous VPN resources
-            podman stop gluetun waterfox-secure 2>/dev/null || true
-            podman rm gluetun waterfox-secure 2>/dev/null || true
+            podman stop gluetun 2>/dev/null || true
+            podman rm gluetun 2>/dev/null || true
 
-            # Gluetun VPN gateway — NET_ADMIN only, no --privileged
             podman run -d \
                 --name gluetun \
                 --cap-add NET_ADMIN \
@@ -352,50 +469,99 @@ if [ -n "$WG_CONFIG_PATH" ]; then
                 --restart on-failure:5 \
                 docker.io/qmcgaw/gluetun:v3.40
 
-            # systemd user service for Gluetun auto-start
             podman generate systemd --name gluetun > ~/.config/systemd/user/container-gluetun.service
             systemctl --user daemon-reload
             systemctl --user enable container-gluetun.service
 
-            # Secure browser launcher — joins gluetun network namespace
-            mkdir -p ~/.local/bin
-            cat > ~/.local/bin/waterfox-secure << 'SCRIPT'
+            # Secure browser launcher — enters gluetun network namespace via nsenter
+            cat > ~/.local/bin/waterfox-secure << 'LAUNCHER'
 #!/bin/bash
-if [ "$(id -u)" -eq 0 ]; then
-    echo "ERROR: Do not run this as root/sudo. Rootless podman stores images in your user account." >&2
+# Waterfox (Secure VPN) — bwrap sandbox routed through gluetun VPN
+# Uses nsenter to join gluetun's network namespace, then bwrap for the rest
+
+set -euo pipefail
+
+WATERFOX_DIR="${HOME}/.local/share/waterfox-bwrap/waterfox"
+DATA_DIR="${HOME}/.local/share/waterfox-secure-bwrap"
+DOWNLOAD_DIR="${HOME}/SecureDownloads"
+
+if [ ! -x "${WATERFOX_DIR}/waterfox" ]; then
+    echo "ERROR: Waterfox not found at ${WATERFOX_DIR}" >&2
     exit 1
 fi
 
-if ! systemctl --user is-active podman.socket &>/dev/null; then
-    systemctl --user start podman.socket 2>/dev/null || true
-fi
-
-if ! podman inspect --format '{{.State.Status}}' gluetun 2>/dev/null | grep -q '^running$'; then
-    echo "Error: gluetun container is not running."
-    echo "Start it with: systemctl --user start container-gluetun.service"
+GLUETUN_PID=$(podman inspect --format '{{.State.Pid}}' gluetun 2>/dev/null || echo "")
+if [ -z "${GLUETUN_PID}" ] || [ "${GLUETUN_PID}" = "0" ]; then
+    echo "Error: gluetun container is not running." >&2
+    echo "Start it with: systemctl --user start container-gluetun.service" >&2
     exit 1
 fi
-WAYLAND_SOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/${WAYLAND_DISPLAY:-wayland-0}"
-RUN_OPTS=(
-    --name "waterfox-secure-$$"
-    --network=container:gluetun
-    --security-opt no-new-privileges
-    -e PULSE_SERVER=unix:/tmp/pulse/native
-    -e MOZ_DISABLE_CONTENT_SANDBOX=1
-    -e MOZ_ENABLE_WAYLAND=1
-    -e XDG_RUNTIME_DIR=/tmp/runtime
-    -e WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
-    -v "${WAYLAND_SOCK}:/tmp/runtime/${WAYLAND_DISPLAY:-wayland-0}:ro"
-    -v "${HOME}/SecureDownloads:/home/waterfox/Downloads:Z"
+
+mkdir -p "${DATA_DIR}" "${DOWNLOAD_DIR}"
+
+find "${DATA_DIR}" -name '.parentlock' -delete 2>/dev/null || true
+find "${DATA_DIR}" -name 'lock' -delete 2>/dev/null || true
+
+UID_NUM=$(id -u)
+RUNTIME_DIR="/run/user/${UID_NUM}"
+WAYLAND_SOCK="${XDG_RUNTIME_DIR:-${RUNTIME_DIR}}/${WAYLAND_DISPLAY:-wayland-0}"
+XAUTH=$(find "${RUNTIME_DIR}" -name 'xauth_*' -print -quit 2>/dev/null || true)
+
+BWRAP_ARGS=(
+    --unshare-all
+    --share-net
+    --die-with-parent
+    --hostname remotestation
+
+    --ro-bind /usr /usr
+    --ro-bind /lib /lib
+    --ro-bind /lib64 /lib64
+    --ro-bind /bin /bin
+    --ro-bind /sbin /sbin
+    --ro-bind /etc /etc
+    --ro-bind-try /var /var
+    --dev /dev
+    --dev-bind /dev/dri /dev/dri
+    --proc /proc
+    --ro-bind /sys /sys
+    --tmpfs /tmp
+    --tmpfs /run
+
+    --bind "${DATA_DIR}" /home/waterfox
+    --bind "${DOWNLOAD_DIR}" /home/waterfox/Downloads
+    --ro-bind "${WATERFOX_DIR}" /opt/waterfox
+
+    --ro-bind "${RUNTIME_DIR}/pulse" "${RUNTIME_DIR}/pulse"
+    --setenv PULSE_SERVER "unix:${RUNTIME_DIR}/pulse/native"
 )
-if [ -e /tmp/.X11-unix ]; then
-    RUN_OPTS+=(
-        -v /tmp/.X11-unix:/tmp/.X11-unix:ro
-        -e DISPLAY="${DISPLAY:-:0}"
-    )
+
+if [ -S "${WAYLAND_SOCK}" ]; then
+    BWRAP_ARGS+=(--ro-bind "${WAYLAND_SOCK}" "${RUNTIME_DIR}/${WAYLAND_DISPLAY:-wayland-0}")
 fi
-exec podman run --rm "${RUN_OPTS[@]}" localhost/waterfox-base
-SCRIPT
+
+if [ -e /tmp/.X11-unix ]; then
+    BWRAP_ARGS+=(--ro-bind /tmp/.X11-unix /tmp/.X11-unix)
+fi
+
+if [ -n "${XAUTH:-}" ] && [ -f "${XAUTH}" ]; then
+    BWRAP_ARGS+=(--ro-bind "${XAUTH}" "/tmp/.Xauthority")
+fi
+
+if [ -S "${RUNTIME_DIR}/bus" ]; then
+    BWRAP_ARGS+=(--ro-bind "${RUNTIME_DIR}/bus" "${RUNTIME_DIR}/bus")
+fi
+
+exec nsenter --net=/proc/${GLUETUN_PID}/ns/net -- \
+    bwrap "${BWRAP_ARGS[@]}" \
+    --setenv HOME /home/waterfox \
+    --setenv MOZ_ENABLE_WAYLAND 1 \
+    --setenv MOZ_DISABLE_GMP_SANDBOX 1 \
+    --setenv WAYLAND_DISPLAY "${WAYLAND_DISPLAY:-wayland-0}" \
+    --setenv XDG_RUNTIME_DIR "${RUNTIME_DIR}" \
+    --setenv DISPLAY "${DISPLAY:-:0}" \
+    --setenv XAUTHORITY /tmp/.Xauthority \
+    /opt/waterfox/waterfox --no-remote
+LAUNCHER
             chmod +x ~/.local/bin/waterfox-secure
 
             cat > ~/.local/share/applications/waterfox-secure.desktop << EOF
@@ -431,9 +597,11 @@ else
     echo "Samba shares: (could not detect IP — use 'ip addr')"
 fi
 echo ""
-echo "Browsers:"
+echo "Browsers (bubblewrap sandbox — DRM compatible):"
 echo "  Waterfox (Fun)    : ${HOME}/.local/bin/waterfox-fun"
 echo "                      Downloads isolated to ~/BrowserDownloads"
+echo "  Tor Browser (Fun) : ${HOME}/.local/bin/thor-fun"
+echo "                      All traffic through Tor network"
 if [ "$VPN_ENABLED" = true ]; then
     echo "  Waterfox (Secure) : ${HOME}/.local/bin/waterfox-secure"
     echo "                      All traffic through WireGuard VPN"
