@@ -287,7 +287,7 @@ echo "[APPS PROFILE — SECURE BROWSER (VPN)]"
 
 WG_CONF="${HOME}/vpn/wireguard/wg0.conf"
 if [ -f "$WG_CONF" ]; then
-    pass "WireGuard config exists: ${WG_CONF}"
+    pass "WireGuard user config exists: ${WG_CONF}"
 
     if grep -q '^\[Interface\]' "$WG_CONF"; then pass "wg0.conf has [Interface] section"
     else fail "wg0.conf has [Interface] section"; fi
@@ -302,51 +302,21 @@ if [ -f "$WG_CONF" ]; then
         fail "wg0.conf permissions are 600 (got ${PERMS})" "chmod 600 ${WG_CONF}"
     fi
 
-    check_container_running "Container gluetun running" gluetun \
-        "systemctl --user start container-gluetun.service"
-
-    # Verify gluetun is NOT running privileged
-    if podman inspect gluetun &>/dev/null; then
-        PRIV=$(podman inspect --format '{{.HostConfig.Privileged}}' gluetun 2>/dev/null || echo "unknown")
-        if [ "$PRIV" = "false" ]; then
-            pass "gluetun container is not --privileged"
-        else
-            fail "gluetun container is not --privileged" \
-                "Remove --privileged from gluetun; it only needs --cap-add NET_ADMIN"
-        fi
-
-        CAPS=$(podman inspect --format '{{.HostConfig.CapAdd}}' gluetun 2>/dev/null || echo "")
-        if echo "$CAPS" | grep -q "NET_ADMIN"; then
-            pass "gluetun has NET_ADMIN capability"
-        else
-            warn "gluetun NET_ADMIN capability not confirmed" "Check: podman inspect gluetun"
-        fi
-    fi
+    check_file "/etc/wireguard/wg0.conf exists" /etc/wireguard/wg0.conf \
+        "Re-run setup-apps.sh with VPN config"
 
     check_file "waterfox-secure.desktop exists" \
         "${HOME}/.local/share/applications/waterfox-secure.desktop"
     check_file "~/.local/bin/waterfox-secure exists" \
         "${HOME}/.local/bin/waterfox-secure"
     check_dir  "waterfox-secure data dir exists" "${HOME}/.local/share/waterfox-secure-bwrap"
-    check_file "Gluetun systemd service file exists" \
-        "${HOME}/.config/systemd/user/container-gluetun.service"
-    check_service_enabled "Gluetun service enabled" container-gluetun.service
     check_dir  "~/SecureDownloads exists" "${HOME}/SecureDownloads"
+    check_cmd  "wg-quick available" wg-quick "sudo pacman -S wireguard-tools"
 
-    # VPN routing check (optional — needs internet)
-    if command -v curl &>/dev/null && podman inspect --format '{{.State.Status}}' gluetun 2>/dev/null | grep -q '^running$'; then
-        HOST_IP=$(curl -s --max-time 5 https://ifconfig.me 2>/dev/null || echo "")
-        VPN_IP=$(podman exec gluetun curl -s --max-time 10 https://ifconfig.me 2>/dev/null || echo "")
-        if [ -n "$HOST_IP" ] && [ -n "$VPN_IP" ] && [ "$HOST_IP" != "$VPN_IP" ]; then
-            pass "VPN routing: host IP (${HOST_IP}) ≠ VPN IP (${VPN_IP})"
-        elif [ -z "$HOST_IP" ] || [ -z "$VPN_IP" ]; then
-            warn "VPN routing check skipped (no internet or gluetun not yet connected)"
-        else
-            fail "VPN routing: host and VPN IPs are the same (${HOST_IP})" \
-                "Check gluetun logs: podman logs gluetun"
-        fi
+    if sudo wg show wg0 &>/dev/null; then
+        pass "WireGuard tunnel wg0 is up"
     else
-        warn "VPN routing check skipped (curl unavailable or gluetun not running)"
+        warn "WireGuard tunnel wg0 is not up" "sudo wg-quick up wg0"
     fi
 else
     warn "WireGuard config not found at ${WG_CONF}" \

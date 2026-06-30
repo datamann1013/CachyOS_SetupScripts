@@ -475,34 +475,48 @@ if [ -n "$WG_CONFIG_PATH" ]; then
             echo "WARNING: WireGuard config missing [Interface] or [Peer] section — skipping VPN setup." >&2
         else
             VPN_ENABLED=true
-            echo ">>> Configuring VPN gateway and secure browser..."
+            echo ">>> Configuring VPN and secure browser..."
+
+            sudo pacman -S --needed --noconfirm wireguard-tools 2>/dev/null
+
             mkdir -p ~/vpn/wireguard
             cp "$WG_CONFIG_PATH" ~/vpn/wireguard/wg0.conf
             chmod 600 ~/vpn/wireguard/wg0.conf
 
-            podman stop gluetun 2>/dev/null || true
-            podman rm gluetun 2>/dev/null || true
+            WG_ENDPOINT=$(grep -oP 'Endpoint\s*=\s*\K[^:]+' ~/vpn/wireguard/wg0.conf | head -1)
+            if [ -n "${WG_ENDPOINT}" ]; then
+                WG_IP=$(dig +short "${WG_ENDPOINT}" A 2>/dev/null || echo "")
+                if [ -n "${WG_IP}" ]; then
+                    sed -i "s/Endpoint = ${WG_ENDPOINT}:/Endpoint = ${WG_IP}:/" ~/vpn/wireguard/wg0.conf
+                fi
+            fi
 
-            podman run -d \
-                --name gluetun \
-                --cap-add NET_ADMIN \
-                --device /dev/net/tun \
-                -v ~/vpn/wireguard:/gluetun/wireguard:ro \
-                -e VPN_SERVICE_PROVIDER=custom \
-                -e VPN_TYPE=wireguard \
-                -e WIREGUARD_CONFIG_FILE=/gluetun/wireguard/wg0.conf \
-                --restart on-failure:5 \
-                docker.io/qmcgaw/gluetun:v3.40
+            sudo tee /etc/wireguard/wg0.conf > /dev/null << WGEOF
+[Interface]
+PrivateKey = $(grep -oP 'PrivateKey\s*=\s*\K.*' ~/vpn/wireguard/wg0.conf)
+Address = $(grep -oP 'Address\s*=\s*\K.*' ~/vpn/wireguard/wg0.conf)
+MTU = $(grep -oP 'MTU\s*=\s*\K.*' ~/vpn/wireguard/wg0.conf || echo 1420)
+PostUp = ip rule add from $(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}') table 128
+PostUp = ip route add default via $(ip route | awk '/default/{print $3; exit}') table 128
+PostDown = ip rule del from $(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}') table 128
+PostDown = ip route del default via $(ip route | awk '/default/{print $3; exit}') table 128
 
-            podman generate systemd --name gluetun > ~/.config/systemd/user/container-gluetun.service
-            systemctl --user daemon-reload
-            systemctl --user enable container-gluetun.service
+[Peer]
+PublicKey = $(grep -oP 'PublicKey\s*=\s*\K.*' ~/vpn/wireguard/wg0.conf)
+AllowedIPs = $(grep -oP 'AllowedIPs\s*=\s*\K.*' ~/vpn/wireguard/wg0.conf)
+Endpoint = $(grep -oP 'Endpoint\s*=\s*\K.*' ~/vpn/wireguard/wg0.conf)
+PersistentKeepalive = $(grep -oP 'PersistentKeepalive\s*=\s*\K.*' ~/vpn/wireguard/wg0.conf || echo 21)
+WGEOF
+            sudo chmod 600 /etc/wireguard/wg0.conf
 
-            # Secure browser launcher — enters gluetun network namespace via nsenter
+            sudo systemctl enable wg-quick@wg0
+
             cat > ~/.local/bin/waterfox-secure << 'LAUNCHER'
 #!/bin/bash
-# Waterfox (Secure VPN) — bwrap sandbox routed through gluetun VPN
-# Uses nsenter to join gluetun's network namespace, then bwrap for the rest
+# Waterfox (Secure VPN) — bwrap sandbox with WireGuard VPN
+# Brings up wg0, runs browser, tears down wg0 on exit.
+# WireGuard routing uses policy routing: only the browser's
+# network namespace routes through the VPN tunnel.
 
 set -euo pipefail
 
@@ -515,12 +529,21 @@ if [ ! -x "${WATERFOX_DIR}/waterfox" ]; then
     exit 1
 fi
 
-GLUETUN_PID=$(podman inspect --format '{{.State.Pid}}' gluetun 2>/dev/null || echo "")
-if [ -z "${GLUETUN_PID}" ] || [ "${GLUETUN_PID}" = "0" ]; then
-    echo "Error: gluetun container is not running." >&2
-    echo "Start it with: systemctl --user start container-gluetun.service" >&2
-    exit 1
+if ! sudo wg show wg0 &>/dev/null; then
+    echo "Bringing up WireGuard VPN tunnel..."
+    sudo wg-quick up wg0
+    TRAP_WG=true
+else
+    TRAP_WG=false
 fi
+
+cleanup() {
+    if [ "$TRAP_WG" = true ]; then
+        echo "Tearing down WireGuard VPN tunnel..."
+        sudo wg-quick down wg0 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT
 
 mkdir -p "${DATA_DIR}" "${DOWNLOAD_DIR}"
 
@@ -575,8 +598,11 @@ if [ -S "${RUNTIME_DIR}/bus" ]; then
     BWRAP_ARGS+=(--ro-bind "${RUNTIME_DIR}/bus" "${RUNTIME_DIR}/bus")
 fi
 
-exec nsenter --net=/proc/${GLUETUN_PID}/ns/net -- \
-    bwrap "${BWRAP_ARGS[@]}" \
+if [ -S /run/pcscd/pcscd.comm ]; then
+    BWRAP_ARGS+=(--ro-bind /run/pcscd/pcscd.comm /run/pcscd/pcscd.comm)
+fi
+
+exec bwrap "${BWRAP_ARGS[@]}" \
     --setenv HOME /home/waterfox \
     --setenv PATH /usr/local/bin:/usr/bin:/bin \
     --setenv MOZ_ENABLE_WAYLAND 1 \
